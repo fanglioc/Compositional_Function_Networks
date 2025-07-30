@@ -21,12 +21,10 @@ The **Compositional Function Network (CFN)** is an innovative approach to machin
 Compositional_Function_Network/
 ├── cfn_pytorch/                  # Core PyTorch implementation of CFN
 ├── cfn_numpy/                    # Core NumPy implementation of CFN
-├── autocfn/                      # Tools for automatic architecture search
+├── autocfn/                      # Tools for automatic architecture search (Under development)
 ├── benchmarking/                 # Scripts for performance benchmarking
 ├── data/                         # Datasets for examples
 ├── docs/                         # Project documentation
-├── experiment_records/           # Experiment logs and results
-├── paper/                        # Research paper
 ├── run_pytorch_examples.py       # Script to run PyTorch examples
 ├── run_numpy_examples.py         # Script to run NumPy examples
 ├── requirements.txt              # Python dependencies
@@ -39,10 +37,9 @@ It is recommended to use a Python virtual environment.
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/Compositional_Function_Network.git
-    cd Compositional_Function_Network
+    git clone https://github.com/your-username/Compositional_Function_Networks.git
+    cd Compositional_Function_Networks
     ```
-    *(Note: Replace `your-username` with your actual GitHub username after creating the repository.)*
 
 2.  **Create and activate a virtual environment:**
     ```bash
