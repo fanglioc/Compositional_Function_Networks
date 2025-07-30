@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+data/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.venv/
+venv/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS-specific
+.DS_Store
+
+# Datasets
+cifar-10-batches-py/
+cifar-10-python.tar.gz
+
+# Models
+*.pth
+best_cifar10_model_hybrid.pth
