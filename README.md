@@ -20,7 +20,7 @@ The **Compositional Function Network (CFN)** is an innovative approach to machin
 ```
 Compositional_Function_Network/
 ├── cfn_pytorch/                  # Core PyTorch implementation of CFN
-├── cfn_numpy/                    # Core NumPy implementation of CFN
+├── cfn_numpy/                    # Lightweight NumPy implementation of CFN (ideal for CPU-based tasks and easier debugging)
 ├── autocfn/                      # Tools for automatic architecture search (Under development)
 ├── benchmarking/                 # Scripts for performance benchmarking
 ├── data/                         # Datasets for examples
