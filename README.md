@@ -37,7 +37,7 @@ It is recommended to use a Python virtual environment.
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/Compositional_Function_Networks.git
+    git clone https://github.com/fanglioc/Compositional_Function_Networks.git
     cd Compositional_Function_Networks
     ```
 
