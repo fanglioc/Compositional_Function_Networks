@@ -127,7 +127,7 @@ The `cfn_numpy/interpretability.py` module provides functions to analyze trained
 
 ## Citation
 
-If you use this project in your research, please cite our paper:
+If you use this project in your research, please cite my paper:
 
 ```bibtex
 @misc{li2025compositionalfunctionnetworkshighperformance,
