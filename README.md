@@ -1,7 +1,7 @@
 # Compositional Function Networks (CFN)
 
 <p align="left">
-  <img src="docs/cfn_logo_new.png" alt="CFN Logo Placeholder" width="150">
+  <img src="docs/logos/cfn_logo_new.png" alt="CFN Logo Placeholder" width="150">
 </p>
 
 ## Introduction
@@ -120,6 +120,11 @@ python run_pytorch_examples.py
 python run_numpy_examples.py
 ```
 Upon running, you will be presented with an interactive menu to select which example to run.
+
+## Tutorials
+
+-   [**Predicting Diabetes with an Interpretable CFN**](docs/tutorials/diabetes/diabetes_cfn_tutorial.md): A step-by-step guide to building a high-performance, interpretable model for the diabetes dataset.
+-   [**Unraveling the Spiral: Interpretable Classification with CFNs**](docs/tutorials/spiral_classification/spiral_classification_tutorial.md): A walkthrough of how to solve the classic spiral classification problem with a fully transparent CFN.
 
 ## Model Interpretability
 
