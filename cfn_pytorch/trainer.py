@@ -5,11 +5,12 @@ import torch.optim as optim
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import copy
+from torch.utils.tensorboard import SummaryWriter
 
 class Trainer:
     """Training utility for PyTorch-based Compositional Function Networks."""
 
-    def __init__(self, network, optimizer=None, scheduler=None, learning_rate=0.01, grad_clip_norm=None, weight_decay=0.0, device='cpu'):
+    def __init__(self, network, optimizer=None, scheduler=None, learning_rate=0.01, grad_clip_norm=None, weight_decay=0.0, device='cpu', log_dir='runs/cfn_experiment'):
         self.network = network
         self.learning_rate = learning_rate
         if optimizer is None:
@@ -23,6 +24,7 @@ class Trainer:
         self.val_accuracies = [] # Added for validation accuracy
         self.device = device
         self.network.to(self.device)
+        self.writer = SummaryWriter(log_dir)
 
     def train(self, train_loader, val_loader=None, epochs=100, loss_fn=nn.MSELoss(), early_stopping_patience=None, lr_decay_step=None, lr_decay_gamma=0.1, metric_fn=None):
         """
@@ -108,6 +110,13 @@ class Trainer:
                     log_string += f", Val Acc: {val_metric_avg:.2f} %"
                 print(log_string)
 
+                # Log to TensorBoard
+                self.writer.add_scalar('Loss/train', epoch_loss, epoch)
+                if val_loader:
+                    self.writer.add_scalar('Loss/validation', val_loss, epoch)
+                    if metric_fn:
+                        self.writer.add_scalar('Accuracy/validation', val_metric_avg, epoch)
+
                 # Early stopping check
                 if early_stopping_patience is not None:
                     if val_loss < best_val_loss:
@@ -129,6 +138,33 @@ class Trainer:
             self.network.load_state_dict(best_model_state)
 
         return self.train_losses, self.val_losses
+
+    def evaluate(self, test_loader):
+        """
+        Evaluate the network on a test set.
+
+        Args:
+            test_loader: DataLoader for the test set.
+
+        Returns:
+            The accuracy of the network on the test set.
+        """
+        self.network.eval() # Set the model to evaluation mode
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, targets in tqdm(test_loader, desc="Evaluating"):
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                if inputs.dim() == 4:
+                    inputs = inputs.view(inputs.size(0), -1)
+
+                outputs = self.network(inputs)
+                _, predicted = torch.max(outputs.data, 1)
+                total += targets.size(0)
+                correct += (predicted == targets).sum().item()
+        
+        accuracy = 100 * correct / total
+        return accuracy
 
     def plot_loss(self, filename='loss_plot.png'):
         """

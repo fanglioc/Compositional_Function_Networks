@@ -569,113 +569,6 @@ class PoolingNode(FunctionNode):
 # endregion
 
 
-# region --- Shared Patch Node ---
-
-
-class SharedPatchFunctionNode(FunctionNode):
-    """
-    Applies a basic FunctionNode to patches of an image with shared parameters.
-
-    Args:
-        input_image_shape (Tuple[int, int, int]): The (channels, height, width)
-            of the input image.
-        patch_size (Tuple[int, int]): The (height, width) of the patches.
-        stride (Tuple[int, int]): The (height, width) of the stride.
-        sub_node_type (str): The name of the function node to apply to each patch.
-        sub_node_kwargs (Dict): The keyword arguments for the sub-node.
-        combination (str): How to combine the outputs from the patches.
-            One of 'concat', 'mean', or 'max'. Defaults to 'concat'.
-    """
-
-    def __init__(
-        self,
-        input_image_shape: Tuple[int, int, int],
-        patch_size: Tuple[int, int],
-        stride: Tuple[int, int],
-        sub_node_type: str,
-        sub_node_kwargs: Dict,
-        combination: str = "concat",
-    ):
-        # Calculate the flattened input dimension for the full image
-        input_dim = input_image_shape[0] * input_image_shape[1] * input_image_shape[2]
-        super().__init__(input_dim)
-
-        self.input_image_shape = input_image_shape
-        self.patch_size = patch_size
-        self.stride = stride
-        self.combination = combination
-
-        # Calculate input dimension for a single patch
-        patch_input_dim = patch_size[0] * patch_size[1] * input_image_shape[0]
-
-        # Create the sub-node that will operate on each patch
-        self.sub_node = FunctionNodeFactory.create(
-            sub_node_type, input_dim=patch_input_dim, **sub_node_kwargs
-        )
-
-        # Calculate output dimensions
-        # Calculate number of patches
-        output_h = (input_image_shape[1] - patch_size[0]) // stride[0] + 1
-        output_w = (input_image_shape[2] - patch_size[1]) // stride[1] + 1
-        self.num_patches = output_h * output_w
-
-        if self.combination == "concat":
-            self.output_dim = self.num_patches * self.sub_node.output_dim
-        elif self.combination in ["mean", "max"]:
-            # If combining with mean/max, the sub_node must output a single value per patch
-            if self.sub_node.output_dim != 1:
-                raise ValueError(
-                    f"Sub-node must have output_dim=1 for '{combination}' combination."
-                )
-            self.output_dim = 1  # Single global feature
-        else:
-            raise ValueError(f"Unknown combination method: {combination}")
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch_size = x.shape[0]
-
-        # Reshape flattened input to image format (channels, height, width)
-        x_img = x.view(
-            batch_size,
-            self.input_image_shape[0],
-            self.input_image_shape[1],
-            self.input_image_shape[2],
-        )
-
-        # Extract patches using unfold
-        # Output shape: (batch_size, C*P_h*P_w, num_patches)
-        patches = F.unfold(x_img, kernel_size=self.patch_size, stride=self.stride)
-
-        # Reshape patches for the sub_node: (batch_size * num_patches, patch_input_dim)
-        patches_reshaped = patches.transpose(1, 2).reshape(-1, patches.shape[1])
-
-        # Apply the shared sub_node to all patches
-        sub_node_outputs = self.sub_node(patches_reshaped)
-
-        # Reshape back to (batch_size, num_patches, sub_node_output_dim)
-        sub_node_outputs = sub_node_outputs.view(
-            batch_size, self.num_patches, self.sub_node.output_dim
-        )
-
-        # Combine patch outputs
-        if self.combination == "concat":
-            return sub_node_outputs.view(batch_size, -1)  # Flatten all patch outputs
-        elif self.combination == "mean":
-            return torch.mean(sub_node_outputs, dim=1)  # Average across patches
-        elif self.combination == "max":
-            return torch.max(sub_node_outputs, dim=1)[0]  # Max across patches
-
-    def describe(self) -> str:
-        return (
-            f"{self.__class__.__name__}(input_shape={self.input_image_shape}, "
-            f"patch_size={self.patch_size}, stride={self.stride}, "
-            f"sub_node={self.sub_node.describe()}, combination='{self.combination}')"
-        )
-
-
-# endregion
-
-
 # region --- Regularization Nodes ---
 
 
@@ -763,39 +656,6 @@ class IdentityFunctionNode(FunctionNode):
         return f"{self.__class__.__name__} with params: {{}}"
 
 
-class ResidualWrapperNode(FunctionNode):
-    """
-    A node that adds a residual connection around a main path.
-
-    `f(x) = main_path(x) + shortcut(x)`
-
-    Args:
-        input_dim (int): The dimensionality of the input.
-        main_path_nodes (list[FunctionNode]): The list of function nodes in the
-            main path.
-    """
-
-    def __init__(self, input_dim: int, main_path_nodes):
-        super().__init__(input_dim)
-        self.main_path = SequentialWrapperNode(main_path_nodes, input_dim=input_dim)
-
-        # If dimensions don't match, add a linear projection to the shortcut
-        if self.main_path.output_dim != input_dim:
-            self.shortcut = FunctionNodeFactory.create(
-                "Linear", input_dim=input_dim, output_dim=self.main_path.output_dim
-            )
-        else:
-            self.shortcut = FunctionNodeFactory.create("Identity", input_dim=input_dim)
-
-        self.output_dim = self.main_path.output_dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.main_path(x) + self.shortcut(x)
-
-    def describe(self) -> str:
-        return f"{self.__class__.__name__} (Main Path: {self.main_path.describe()}, Shortcut: {self.shortcut.describe()})"
-
-
 class AttentionFunctionNode(FunctionNode):
     """
     A mathematical function node that computes attention as a weighted sum operation.
@@ -881,11 +741,9 @@ class FunctionNodeFactory:
         "Exponential": ExponentialFunctionNode,
         "GenericConv": GenericConvNode,
         "Pooling": PoolingNode,
-        "SharedPatch": SharedPatchFunctionNode,
         "Dropout": DropoutFunctionNode,
         "SequentialWrapper": SequentialWrapperNode,
         "Identity": IdentityFunctionNode,
-        "ResidualWrapper": ResidualWrapperNode,
         "MathematicalAttention": AttentionFunctionNode,
     }
 

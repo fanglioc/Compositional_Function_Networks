@@ -4,6 +4,8 @@ from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
 
 from .function_nodes import FunctionNode
 
@@ -324,5 +326,188 @@ class CompositionFunctionNetwork(nn.Module):
         for i, layer in enumerate(self.layers):
             description += f"Layer {i + 1}: {layer.describe()}"
         return description
+
+
+class ResidualCompositionLayer(CompositionLayer):
+    """
+    A composition layer that adds a residual connection around a main path
+    composed of other CompositionLayers.
+    """
+    def __init__(self, main_path_layers: List[CompositionLayer], input_shape: tuple, output_shape: tuple, name: Optional[str] = None):
+        super().__init__(name)
+        self.main_path = nn.ModuleList(main_path_layers)
+
+        if not main_path_layers:
+            raise ValueError("main_path_layers cannot be empty.")
+
+        # Get input and output shapes from the main path
+        self.input_shape = input_shape # (C, H, W) or (D,)
+        self.output_shape = output_shape # (C_out, H_out, W_out) or (D_out,)
+
+        # Determine if we are dealing with 4D (image) or 2D (flattened) data
+        is_4d_data = len(self.input_shape) == 3
+
+        # Create shortcut connection
+        if self.input_shape != self.output_shape:
+            if is_4d_data:
+                # For 4D data, use a 1x1 convolution to match channels and spatial dimensions
+                # Calculate stride to match spatial dimensions if they change
+                stride_h = self.input_shape[1] // self.output_shape[1] if self.output_shape[1] > 0 else 1
+                stride_w = self.input_shape[2] // self.output_shape[2] if self.output_shape[2] > 0 else 1
+                stride_h = max(1, stride_h) # Ensure stride is at least 1
+                stride_w = max(1, stride_w)
+
+                self.shortcut = nn.Conv2d(
+                    in_channels=self.input_shape[0],
+                    out_channels=self.output_shape[0],
+                    kernel_size=1,
+                    stride=(stride_h, stride_w),
+                    bias=False # Often no bias in shortcut conv
+                )
+            else:
+                # For 2D data, use a Linear layer to match dimensions
+                self.shortcut = nn.Linear(np.prod(self.input_shape), np.prod(self.output_shape))
+        else:
+            self.shortcut = nn.Identity()
+
+        # Set input_dim and output_dim for the base CompositionLayer
+        self.input_dim = np.prod(self.input_shape)
+        self.output_dim = np.prod(self.output_shape)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Ensure input x is in the expected shape (B, C, H, W) or (B, D)
+        # If it's flattened (B, D) but expected 4D, reshape it
+        if len(x.shape) == 2 and len(self.input_shape) == 3:
+            x_reshaped_for_main_path = x.view(-1, *self.input_shape)
+        else:
+            x_reshaped_for_main_path = x
+
+        # Pass input through the main path
+        main_path_output = x_reshaped_for_main_path
+        for layer in self.main_path:
+            main_path_output = layer(main_path_output)
+
+        # Pass original input through the shortcut
+        # Ensure x is in the correct shape for the shortcut (B, C, H, W) or (B, D)
+        if len(x.shape) == 2 and len(self.input_shape) == 3:
+            x_reshaped_for_shortcut = x.view(-1, *self.input_shape)
+        else:
+            x_reshaped_for_shortcut = x
+
+        shortcut_output = self.shortcut(x_reshaped_for_shortcut)
+
+        # Ensure both outputs have the same shape before addition
+        # This is crucial. If main_path_output is 4D and shortcut_output is 4D, they must match.
+        # If main_path_output is 2D and shortcut_output is 2D, they must match.
+        if main_path_output.shape != shortcut_output.shape:
+            # Attempt to reshape shortcut_output to match main_path_output if possible
+            if main_path_output.numel() == shortcut_output.numel() and main_path_output.shape[0] == shortcut_output.shape[0]:
+                shortcut_output = shortcut_output.view_as(main_path_output)
+            else:
+                raise RuntimeError(f"Shape mismatch for residual addition: main_path_output {main_path_output.shape} vs shortcut_output {shortcut_output.shape}. Cannot reshape to match.")
+
+        return main_path_output + shortcut_output
+
+    def describe(self) -> str:
+        main_path_desc = " -> ".join([layer.describe() for layer in self.main_path])
+        shortcut_desc = "Conv2d" if isinstance(self.shortcut, nn.Conv2d) else "Linear" if isinstance(self.shortcut, nn.Linear) else "Identity"
+        return f"ResidualCompositionLayer(Main Path: {main_path_desc}, Shortcut: {shortcut_desc})"
+
+
+class PatchwiseCompositionLayer(CompositionLayer):
+    """
+    A layer that applies a function node to patches of an input tensor.
+    This is a generic layer that can be used for both convolutional and
+    fully-connected-like operations, depending on the combination_layer.
+    """
+
+    def __init__(
+        self,
+        sub_node: FunctionNode,
+        combination_layer: CompositionLayer,
+        input_shape: tuple, # (C, H, W)
+        patch_size: tuple,
+        stride: int = 1,
+        padding: int = 0,
+        name: Optional[str] = None,
+    ):
+        super().__init__(name)
+        self.sub_node = sub_node
+        self.combination_layer = combination_layer
+        self.input_shape = input_shape
+        self.patch_size = patch_size
+        self.stride = stride
+        self.padding = padding
+
+        # Calculate output shape and set input_dim/output_dim
+        self.output_shape = self._calculate_output_shape()
+        self.input_dim = np.prod(self.input_shape)
+        self.output_dim = np.prod(self.output_shape)
+
+    def _calculate_output_shape(self):
+        c, h, w = self.input_shape
+        kh, kw = self.patch_size
+        out_h = (h + 2 * self.padding - kh) // self.stride + 1
+        out_w = (w + 2 * self.padding - kw) // self.stride + 1
+        # The number of output channels is determined by the sub_node
+        out_c = self.sub_node.output_dim
+        return (out_c, out_h, out_w)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Reshape flattened input to image format (B, C, H, W)
+        x_img = x.view(-1, *self.input_shape)
+
+        # Add padding if specified
+        if self.padding > 0:
+            x_img = F.pad(x_img, (self.padding, self.padding, self.padding, self.padding))
+
+        # Extract patches using unfold
+        # Output shape: (B, C * patch_h * patch_w, num_patches_h * num_patches_w)
+        patches = F.unfold(x_img, kernel_size=self.patch_size, stride=self.stride)
+
+        # Reshape patches for the sub_node: (B * num_patches, C * patch_h * patch_w)
+        # First, reshape to (B, C*P_h*P_w, N_h*N_w) -> (B, N_h*N_w, C*P_h*P_w)
+        patches_reshaped_for_sub_node = patches.transpose(1, 2).contiguous()
+        # Then flatten to (B * N_h*N_w, C*P_h*P_w)
+        patches_reshaped_for_sub_node = patches_reshaped_for_sub_node.view(-1, self.sub_node.input_dim)
+
+        # Apply sub_node
+        sub_node_outputs = self.sub_node(patches_reshaped_for_sub_node)
+
+        # Reshape for combination_layer
+        # sub_node_outputs is (B * num_patches, sub_node_output_dim)
+        # We need to get back to (B, sub_node_output_dim, num_patches_h, num_patches_w)
+        batch_size = x.shape[0]
+        num_patches_h = (self.input_shape[1] + 2 * self.padding - self.patch_size[0]) // self.stride + 1
+        num_patches_w = (self.input_shape[2] + 2 * self.padding - self.patch_size[1]) // self.stride + 1
+
+        sub_node_outputs_reshaped = sub_node_outputs.view(
+            batch_size, num_patches_h, num_patches_w, self.sub_node.output_dim
+        )
+        # Permute to (B, sub_node_output_dim, num_patches_h, num_patches_w)
+        sub_node_outputs_reshaped = sub_node_outputs_reshaped.permute(0, 3, 1, 2).contiguous()
+
+        # Apply combination layer
+        return self.combination_layer(sub_node_outputs_reshaped)
+
+    def describe(self) -> str:
+        return f"{self.name} (Patchwise): sub_node={self.sub_node.describe()}, combination={self.combination_layer.describe()}"
+
+
+class FlattenAndConcatenateLayer(CompositionLayer):
+    """
+    A combination layer that flattens the output of a PatchwiseCompositionLayer.
+    """
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.view(x.size(0), -1)
+
+
+class ReassembleToGridLayer(CompositionLayer):
+    """
+    A combination layer that reassembles the output of a PatchwiseCompositionLayer
+    into a new grid, preserving spatial information.
+    """
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
 
 
