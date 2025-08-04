@@ -23,3 +23,6 @@ cifar-10-python.tar.gz
 # Models
 *.pth
 best_cifar10_model_hybrid.pth
+
+# Logs
+runs/

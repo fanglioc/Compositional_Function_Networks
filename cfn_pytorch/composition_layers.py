@@ -454,8 +454,8 @@ class PatchwiseCompositionLayer(CompositionLayer):
         return (out_c, out_h, out_w)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Reshape flattened input to image format (B, C, H, W)
-        x_img = x.view(-1, *self.input_shape)
+        # The input x is expected to be in image format (B, C, H, W)
+        x_img = x
 
         # Add padding if specified
         if self.padding > 0:
@@ -509,5 +509,26 @@ class ReassembleToGridLayer(CompositionLayer):
     """
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x
+
+
+class SELayer(CompositionLayer):
+    """
+    A Squeeze-and-Excitation layer.
+    """
+    def __init__(self, input_channels, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(input_channels, input_channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(input_channels // reduction, input_channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
 
 

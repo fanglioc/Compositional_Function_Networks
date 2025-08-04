@@ -6,11 +6,12 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import copy
 from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 
 class Trainer:
     """Training utility for PyTorch-based Compositional Function Networks."""
 
-    def __init__(self, network, optimizer=None, scheduler=None, learning_rate=0.01, grad_clip_norm=None, weight_decay=0.0, device='cpu', log_dir='runs/cfn_experiment'):
+    def __init__(self, network, optimizer=None, scheduler=None, learning_rate=0.01, grad_clip_norm=None, weight_decay=0.0, device='cpu', log_dir='runs/cfn_experiment', use_amp=False):
         self.network = network
         self.learning_rate = learning_rate
         if optimizer is None:
@@ -23,10 +24,12 @@ class Trainer:
         self.val_losses = []
         self.val_accuracies = [] # Added for validation accuracy
         self.device = device
+        self.use_amp = use_amp and self.device.type == 'cuda'
+        self.scaler = GradScaler('cuda', enabled=self.use_amp)
         self.network.to(self.device)
         self.writer = SummaryWriter(log_dir)
 
-    def train(self, train_loader, val_loader=None, epochs=100, loss_fn=nn.MSELoss(), early_stopping_patience=None, lr_decay_step=None, lr_decay_gamma=0.1, metric_fn=None):
+    def train(self, train_loader, val_loader=None, epochs=100, loss_fn=nn.MSELoss(), early_stopping_patience=None, lr_decay_step=None, lr_decay_gamma=0.1, metric_fn=None, warmup_epochs=0):
         """
         Train the network.
 
@@ -38,6 +41,7 @@ class Trainer:
             early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve.
                                      If None, early stopping is disabled.
             metric_fn: Optional function to calculate a metric (e.g., accuracy) on the validation set.
+            warmup_epochs: Number of epochs for linear learning rate warmup.
         """
         best_val_loss = float('inf')
         epochs_no_improve = 0
@@ -48,37 +52,40 @@ class Trainer:
         if lr_decay_step is not None:
             scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=lr_decay_step, gamma=lr_decay_gamma)
 
+        initial_lr = self.optimizer.param_groups[0]['lr']
+
         for epoch in range(epochs):
             self.network.train() # Set the model to training mode
             running_loss = 0.0
             
+            # Learning rate warmup
+            if epoch < warmup_epochs:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = initial_lr * (epoch + 1) / warmup_epochs
+
             # Training loop
             for i, (inputs, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]")):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 self.optimizer.zero_grad()
                 
-                # Flatten the input if it's a 4D tensor (e.g., images)
-                if inputs.dim() == 4:
-                    inputs = inputs.view(inputs.size(0), -1)
-
-                outputs = self.network(inputs)
-                loss = loss_fn(outputs, targets)
+                with autocast(device_type=self.device.type, enabled=self.use_amp):
+                    outputs = self.network(inputs)
+                    loss = loss_fn(outputs, targets)
                 
-                loss.backward()
+                self.scaler.scale(loss).backward()
                 
                 if self.grad_clip_norm is not None:
+                    self.scaler.unscale_(self.optimizer)
                     nn.utils.clip_grad_norm_(self.network.parameters(), self.grad_clip_norm)
                 
-                self.optimizer.step()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                
                 running_loss += loss.item()
             
             epoch_loss = running_loss / len(train_loader)
             self.train_losses.append(epoch_loss)
             
-            # Step the scheduler after each epoch
-            if scheduler:
-                scheduler.step()
-
             # Validation loop
             if val_loader:
                 self.network.eval() # Set the model to evaluation mode
@@ -89,11 +96,9 @@ class Trainer:
                 with torch.no_grad():
                     for inputs, targets in tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
                         inputs, targets = inputs.to(self.device), targets.to(self.device)
-                        # Flatten the input if it's a 4D tensor (e.g., images)
-                        if inputs.dim() == 4:
-                            inputs = inputs.view(inputs.size(0), -1)
-                        outputs = self.network(inputs)
-                        loss = loss_fn(outputs, targets)
+                        with autocast(device_type=self.device.type, enabled=self.use_amp):
+                            outputs = self.network(inputs)
+                            loss = loss_fn(outputs, targets)
                         val_loss += loss.item()
 
                         if metric_fn:
@@ -129,7 +134,17 @@ class Trainer:
                         if epochs_no_improve >= early_stopping_patience:
                             print(f"Early stopping at epoch {epoch+1} as validation loss did not improve for {early_stopping_patience} epochs.")
                             break
+
+                # Step the scheduler
+                if self.scheduler:
+                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                        self.scheduler.step(val_loss)
+                    else:
+                        self.scheduler.step()
             else:
+                # If no validation loader, step the scheduler (if not ReduceLROnPlateau)
+                if self.scheduler and not isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step()
                 print(f"Epoch {epoch+1}/{epochs}, Train Loss: {epoch_loss:.4f}")
 
         # Restore the best model weights if early stopping was used
@@ -155,10 +170,8 @@ class Trainer:
         with torch.no_grad():
             for inputs, targets in tqdm(test_loader, desc="Evaluating"):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
-                if inputs.dim() == 4:
-                    inputs = inputs.view(inputs.size(0), -1)
-
-                outputs = self.network(inputs)
+                with autocast(device_type=self.device.type, enabled=self.use_amp):
+                    outputs = self.network(inputs)
                 _, predicted = torch.max(outputs.data, 1)
                 total += targets.size(0)
                 correct += (predicted == targets).sum().item()
