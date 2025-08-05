@@ -7,6 +7,24 @@ import matplotlib.pyplot as plt
 import copy
 from torch.utils.tensorboard import SummaryWriter
 from torch.amp import autocast, GradScaler
+import numpy as np
+
+def mixup_data(x, y, alpha=1.0, device='cuda'):
+    '''Returns mixed inputs, pairs of targets, and lambda'''
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 class Trainer:
     """Training utility for PyTorch-based Compositional Function Networks."""
@@ -29,7 +47,7 @@ class Trainer:
         self.network.to(self.device)
         self.writer = SummaryWriter(log_dir)
 
-    def train(self, train_loader, val_loader=None, epochs=100, loss_fn=nn.MSELoss(), early_stopping_patience=None, lr_decay_step=None, lr_decay_gamma=0.1, metric_fn=None, warmup_epochs=0):
+    def train(self, train_loader, val_loader=None, epochs=100, loss_fn=nn.MSELoss(), early_stopping_patience=None, lr_decay_step=None, lr_decay_gamma=0.1, metric_fn=None, warmup_epochs=0, use_mixup=False, mixup_alpha=1.0):
         """
         Train the network.
 
@@ -42,6 +60,8 @@ class Trainer:
                                      If None, early stopping is disabled.
             metric_fn: Optional function to calculate a metric (e.g., accuracy) on the validation set.
             warmup_epochs: Number of epochs for linear learning rate warmup.
+            use_mixup: Whether to use Mixup augmentation.
+            mixup_alpha: Alpha parameter for Mixup.
         """
         best_val_loss = float('inf')
         epochs_no_improve = 0
@@ -66,11 +86,18 @@ class Trainer:
             # Training loop
             for i, (inputs, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]")):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
+                
+                if use_mixup:
+                    inputs, targets_a, targets_b, lam = mixup_data(inputs, targets, mixup_alpha, self.device)
+
                 self.optimizer.zero_grad()
                 
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
                     outputs = self.network(inputs)
-                    loss = loss_fn(outputs, targets)
+                    if use_mixup:
+                        loss = mixup_criterion(loss_fn, outputs, targets_a, targets_b, lam)
+                    else:
+                        loss = loss_fn(outputs, targets)
                 
                 self.scaler.scale(loss).backward()
                 

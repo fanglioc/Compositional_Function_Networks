@@ -38,7 +38,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l1_stride = 1
     l1_padding = 2
     l1_sub_nodes = []
-    for _ in range(8):
+    for _ in range(16):
         l1_sub_nodes.extend([
             FunctionNodeFactory.create('Gabor', input_dim=3*l1_patch_size[0]*l1_patch_size[1], image_size=l1_patch_size, n_channels=3),
             FunctionNodeFactory.create('Polynomial', input_dim=3*l1_patch_size[0]*l1_patch_size[1], degree=2),
@@ -61,6 +61,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l2_input_shape = l1_conv_layer.output_shape
     l2_sub_node = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
         FunctionNodeFactory.create('Linear', input_dim=l2_input_shape[0]*3*3, output_dim=l2_input_shape[0]),
+        FunctionNodeFactory.create('BatchNorm', input_dim=l2_input_shape[0]),
         FunctionNodeFactory.create('ReLU', input_dim=l2_input_shape[0]),
     ])
     l2_conv_layer = PatchwiseCompositionLayer(
@@ -89,6 +90,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l4_input_shape = downsampling_layer_1.output_shape
     l4_sub_node = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
         FunctionNodeFactory.create('Linear', input_dim=l4_input_shape[0]*3*3, output_dim=l4_input_shape[0]),
+        FunctionNodeFactory.create('BatchNorm', input_dim=l4_input_shape[0]),
         FunctionNodeFactory.create('ReLU', input_dim=l4_input_shape[0]),
     ])
     l4_conv_layer = PatchwiseCompositionLayer(
@@ -117,6 +119,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l6_input_shape = downsampling_layer_2.output_shape
     l6_sub_node = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
         FunctionNodeFactory.create('Linear', input_dim=l6_input_shape[0]*3*3, output_dim=l6_input_shape[0]),
+        FunctionNodeFactory.create('BatchNorm', input_dim=l6_input_shape[0]),
         FunctionNodeFactory.create('ReLU', input_dim=l6_input_shape[0]),
     ])
     l6_conv_layer = PatchwiseCompositionLayer(
@@ -133,6 +136,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l7_input_shape = res_block_3.output_shape
     l7_sub_node = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
         FunctionNodeFactory.create('Linear', input_dim=l7_input_shape[0]*3*3, output_dim=l7_input_shape[0]),
+        FunctionNodeFactory.create('BatchNorm', input_dim=l7_input_shape[0]),
         FunctionNodeFactory.create('ReLU', input_dim=l7_input_shape[0]),
     ])
     l7_conv_layer = PatchwiseCompositionLayer(
@@ -149,6 +153,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
     l8_input_shape = res_block_4.output_shape
     l8_sub_node = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
         FunctionNodeFactory.create('Linear', input_dim=l8_input_shape[0]*3*3, output_dim=l8_input_shape[0]),
+        FunctionNodeFactory.create('BatchNorm', input_dim=l8_input_shape[0]),
         FunctionNodeFactory.create('ReLU', input_dim=l8_input_shape[0]),
     ])
     l8_conv_layer = PatchwiseCompositionLayer(
@@ -174,7 +179,7 @@ def build_math_cnn(input_image_shape, num_classes=10):
 
     # Layer 10: Final Classifier
     classifier = FunctionNodeFactory.create('SequentialWrapper', function_nodes=[
-        FunctionNodeFactory.create('Dropout', input_dim=256, p=0.6),
+        FunctionNodeFactory.create('Dropout', input_dim=256, p=0.5),
         FunctionNodeFactory.create('Linear', input_dim=256, output_dim=num_classes),
     ])
 
@@ -210,10 +215,9 @@ def main():
     train_transform = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1), # Re-added ColorJitter
+        transforms.AutoAugment(transforms.AutoAugmentPolicy.CIFAR10),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False), # Cutout
     ])
 
     val_transform = transforms.Compose([
@@ -256,8 +260,8 @@ def main():
         model = torch.compile(model, backend='aot_eager')
 
     # Trainer setup with modern optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=150)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=300)
     trainer = Trainer(model, optimizer=optimizer, scheduler=scheduler, device=device, log_dir='runs/cifar10_math_cnn', use_amp=True, grad_clip_norm=1.0)
     
     # Define the accuracy metric for validation
@@ -267,13 +271,62 @@ def main():
 
     # Train the model with Label Smoothing
     print("Starting training with early stopping, LR decay, and Label Smoothing...")
-    trainer.train(trainloader, val_loader=valloader, epochs=150, loss_fn=nn.CrossEntropyLoss(label_smoothing=0.1), early_stopping_patience=20, metric_fn=accuracy_metric, warmup_epochs=5)
+    trainer.train(trainloader, val_loader=valloader, epochs=300, loss_fn=nn.CrossEntropyLoss(label_smoothing=0.1), early_stopping_patience=30, metric_fn=accuracy_metric, warmup_epochs=5, use_mixup=True)
     print("Training finished.")
 
     # Evaluate the model
     print("Evaluating on test set...")
     accuracy = trainer.evaluate(testloader)
     print(f"Test Accuracy: {accuracy:.2f}%")
+
+    # Evaluate with TTA
+    print("Evaluating with Test-Time Augmentation...")
+    tta_accuracy = evaluate_with_tta(model, testloader, device)
+    print(f"Test Accuracy with TTA: {tta_accuracy:.2f}%")
+
+
+def mixup_data(x, y, alpha=1.0, device='cuda'):
+    '''Returns mixed inputs, pairs of targets, and lambda'''
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+def evaluate_with_tta(model, test_loader, device):
+    model.eval()
+    correct = 0
+    total = 0
+    tta_transforms = [
+        lambda x: x,  # Original
+        lambda x: torch.flip(x, dims=[3]),  # Horizontal Flip
+    ]
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            batch_preds = []
+            for transform in tta_transforms:
+                augmented_images = transform(images)
+                outputs = model(augmented_images)
+                batch_preds.append(outputs.softmax(dim=1))
+            
+            avg_preds = torch.mean(torch.stack(batch_preds), dim=0)
+            _, predicted = torch.max(avg_preds, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    return 100 * correct / total
 
 
 if __name__ == "__main__":

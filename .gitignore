@@ -26,3 +26,7 @@ best_cifar10_model_hybrid.pth
 
 # Logs
 runs/
+
+# Local packages
+cfn.egg-info/
+.ruff_cache/

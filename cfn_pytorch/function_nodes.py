@@ -115,6 +115,52 @@ class ReLUFunctionNode(FunctionNode):
         return self.relu(x)
 
 
+class BatchNormNode(FunctionNode):
+    """
+    A Batch Normalization function node implemented from first principles.
+
+    Args:
+        input_dim (int): The number of features in the input.
+        eps (float): A value added to the denominator for numerical stability. Defaults to 1e-5.
+        momentum (float): The value used for the running_mean and running_var computation. Defaults to 0.1.
+    """
+    def __init__(self, input_dim: int, eps: float = 1e-5, momentum: float = 0.1):
+        super().__init__(input_dim)
+        self.output_dim = input_dim
+        self.eps = eps
+        self.momentum = momentum
+
+        # Learnable parameters
+        self.gamma = nn.Parameter(torch.ones(input_dim))
+        self.beta = nn.Parameter(torch.zeros(input_dim))
+
+        # Buffers for running statistics
+        self.register_buffer('running_mean', torch.zeros(input_dim))
+        self.register_buffer('running_var', torch.ones(input_dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training:
+            # Calculate batch statistics
+            batch_mean = x.mean(dim=0)
+            batch_var = x.var(dim=0, unbiased=False)
+
+            # Update running statistics
+            self.running_mean = (1 - self.momentum) * self.running_mean + self.momentum * batch_mean.detach()
+            self.running_var = (1 - self.momentum) * self.running_var + self.momentum * batch_var.detach()
+
+            # Normalize using batch statistics
+            x_hat = (x - batch_mean) / torch.sqrt(batch_var + self.eps)
+        else:
+            # Normalize using running statistics
+            x_hat = (x - self.running_mean) / torch.sqrt(self.running_var + self.eps)
+
+        # Scale and shift
+        return self.gamma * x_hat + self.beta
+
+    def describe(self) -> str:
+        return f"BatchNormNode(eps={self.eps}, momentum={self.momentum})"
+
+
 class SinusoidalFunctionNode(FunctionNode):
     """
     A sinusoidal function node: `f(x) = amplitude * sin(frequency * (x·direction) + phase)`.
@@ -731,6 +777,7 @@ class FunctionNodeFactory:
     _node_types: Dict[str, Type[FunctionNode]] = {
         "Linear": LinearFunctionNode,
         "ReLU": ReLUFunctionNode,
+        "BatchNorm": BatchNormNode,
         "Sinusoidal": SinusoidalFunctionNode,
         "Polynomial": PolynomialFunctionNode,
         "Gaussian": GaussianFunctionNode,
