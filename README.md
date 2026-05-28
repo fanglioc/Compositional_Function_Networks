@@ -132,21 +132,21 @@ The `cfn_numpy/interpretability.py` module provides functions to analyze trained
 
 ## Citation
 
-If you use this project in your research, please cite my paper:
+If you use this project in your research, please cite the AAAI MAKE 2026 proceedings paper:
 
 ```bibtex
-@misc{li2025compositionalfunctionnetworkshighperformance,
-      title={Compositional Function Networks: A High-Performance Alternative to Deep Neural Networks with Built-in Interpretability}, 
-      author={Fang Li},
-      year={2025},
-      eprint={2507.21004},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2507.21004}, 
+@inproceedings{li2026compositional,
+  title={Compositional function networks: A high-performance alternative to deep neural networks with built-in interpretability},
+  author={Li, Fang},
+  booktitle={Proceedings of the AAAI Symposium Series},
+  volume={8},
+  number={1},
+  pages={447--454},
+  year={2026}
 }
 ```
 
-[https://arxiv.org/abs/2507.21004](https://arxiv.org/abs/2507.21004)
+Published in *Proceedings of the AAAI Symposium Series*, vol. 8, no. 1 (AAAI MAKE 2026), pp. 447–454. A preprint is also available on [arXiv](https://arxiv.org/abs/2507.21004).
 
 ## Contributing
 
